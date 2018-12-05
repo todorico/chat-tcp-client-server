@@ -21,10 +21,10 @@ g++
 # Execution
 
 Deplacez vous dans le repertoire du projet, compilez puis mettez en place le
-serveur (Usage : server <PORT>).
+serveur (Usage : server <PORT> <MAX_CLIENT>).
 
 ```bash
-./bin/server 25
+./bin/server 25 30
 ```
 Ensuite connectez vous à ce serveur grâce à sont adresse et son numéro de port
 (Usage : client <SERV_ADDR> <SERV_PORT>).
