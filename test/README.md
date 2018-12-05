@@ -21,7 +21,7 @@ g++
 # Execution
 
 Deplacez vous dans le repertoire du projet, compilez puis mettez en place le
-serveur (Usage : server <PORT> <MAX_CLIENT>).
+serveur (Usage : server <PORT_NUM>).
 
 ```bash
 ./bin/server 25 30
