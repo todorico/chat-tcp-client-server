@@ -19,7 +19,6 @@
 #define BUF_SIZE 1024
 #define MAX_CLIENT 10
 
-
  
 /* getaddrinfo() renvoie une structure de liste d'adresse.
  * On essaie chaque adresse jusqu'à ce qu'on puisse en liée une au socket.
@@ -69,12 +68,60 @@ pid_t fork_process(void){
     return pid;
 }
 
+int count_lines(FILE* stream) {
+
+    char c;  // To store a character read from file 
+    int count = 0;  // Line counter (result) 
+  
+    if (stream == NULL) 
+        return -1;
+  
+    for (c = getc(stream); c != EOF; c = getc(stream)) 
+        if (c == '\n') // Increment count if this character is newline 
+            count = count + 1; 
+
+    return count;
+}
+
+const char* messages_path = "server_messages.txt";
+
+
+void read_and_send_messages(int sockfd, FILE* messages_stream) {
+
+    int message_count = count_lines(messages_stream); WARN_ERROR(message_count);
+
+    // retour au debut du fichier
+    fseek(messages_stream, 0, SEEK_SET);
+    
+    printf("Envoie du nombre de %d messages...\n", message_count);
+    
+    ssize_t nread = send(sockfd, &message_count, sizeof(message_count), 0); WARN_ERROR(nread);
+
+    printf("Envoie du contenu des messages...\n");
+
+    char* line = NULL;
+    size_t line_size = 0;
+
+    while (getline(&line, &line_size, messages_stream) != -1) {
+        // Envoie taille message
+        nread = send(sockfd, &line_size, sizeof(line_size), 0); WARN_ERROR(nread);
+        // Envoie contenu message
+        nread = send(sockfd, line, line_size, 0); WARN_ERROR(nread);
+    }
+
+    free(line);
+}
+
 // renvoie les message au client
 void manage_client_connection(int client_socket, const char* host, const char* serv){
 
     ssize_t nread = 0;
-    //struct sockaddr client_addr;
-    //socklen_t client_addrlen = sizeof(client_addr);
+    
+    FILE* messages_stream = fopen(messages_path, "r"); WARN_ERROR_IF(messages_stream == NULL);
+
+    read_and_send_messages(client_socket, messages_stream);
+
+    fclose(messages_stream);
 
     while (1) {
 
@@ -102,6 +149,16 @@ void clean_exit(int num) {
 int main(int argc, char const *argv[]){
 
     PRINT_USAGE_IF(argc < 2, "Usage %s <PORT>\n", argv[0]);
+
+    FILE* messages_stream = fopen(messages_path, "w+"); WARN_ERROR_IF(messages_stream == NULL);
+
+    fprintf(messages_stream, "bonjour !,\n");
+    fprintf(messages_stream, "je suis le contenu du fichier !\n");
+    fprintf(messages_stream, "interressant n'est-ce pas ?\n");
+    fprintf(messages_stream, "dans le future je contiendrai des messages de la forme:\n");
+    fprintf(messages_stream, "DATE_ENVOI:NOM_UTILISATEUR:MESSAGE\n");
+    
+    fclose(messages_stream);
 
     const char* server_port = argv[1];
 

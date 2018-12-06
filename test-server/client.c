@@ -56,6 +56,43 @@ int create_and_connect_socket(struct addrinfo* addr_list, struct sockaddr* conne
     return connect_addr == NULL ? -1 : sock_fd;
 }
 
+void recv_and_save_messages(int sockfd, FILE* messages_stream) {
+
+    long messages_count = 0;
+
+    printf("Reception du nombre de messages...\n");
+    
+    ssize_t nread = recv(sockfd, &messages_count, sizeof(messages_count), 0); WARN_ERROR(nread);
+
+    printf("Reception du contenu des messages\n");
+
+    char* line = NULL;
+    size_t line_size = 0;
+
+    for (int i = 0; i < messages_count; ++i) {
+        nread = recv(sockfd, &line_size, sizeof(line_size), 0); WARN_ERROR(nread);
+        line = (char*) malloc(line_size);
+        nread = recv(sockfd, line, line_size, 0); WARN_ERROR(nread);
+        fprintf(messages_stream, "%s", line);
+
+        free(line);
+    }
+}
+
+void print_file(FILE* stream) {
+
+    fseek(stream, 0, SEEK_SET);
+
+    char c = fgetc(stream); 
+
+    while (c != EOF) { 
+        printf ("%c", c); 
+        c = fgetc(stream); 
+    }  
+}
+
+const char* messages_path = "client_messages.txt";
+
 int main(int argc, char const *argv[]){
 
     PRINT_USAGE_IF(argc < 3, "Usage %s <HOTE> <PORT_>\n", argv[0]);
@@ -87,6 +124,18 @@ int main(int argc, char const *argv[]){
     freeaddrinfo(result);
 
     printf("Connexion en cours...\n");
+ 
+    FILE* messages_stream = fopen(messages_path, "w+"); WARN_ERROR_IF(messages_stream == NULL);
+    
+    printf("Reception des messages...\n");
+
+    recv_and_save_messages(client_socket, messages_stream);
+
+    printf("Affichage des messages...\n");
+
+    print_file(messages_stream);
+
+    fclose(messages_stream);
 
     while (1) {
 
