@@ -5,169 +5,173 @@
 #include <unistd.h>
 
 #include <sys/types.h>
-#include <sys/ipc.h>
-#include <sys/msg.h>
+#include <sys/socket.h>
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <netdb.h>
+
 #include <pthread.h>
 #include <fcntl.h>
 
 #include "warn.h"
 
-#define DECOMPOSEUR 1
-#define PARENT 2
+#define BUF_SIZE 1024
+#define MAX_CLIENT 10
 
-typedef struct num_msg {
-    long mtype;
-    long long num;
-} num_msg;
 
-pthread_mutex_t queue_mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_cond_t prime_cond = PTHREAD_COND_INITIALIZER;
-pthread_cond_t factor_cond = PTHREAD_COND_INITIALIZER;
+ 
+/* getaddrinfo() renvoie une structure de liste d'adresse.
+ * On essaie chaque adresse jusqu'à ce qu'on puisse en liée une au socket.
+ * Si socket (ou bind echoue, on (ferme le socket et) essaie l'adresse suivante.
+ * On renvoie l'adresse qui sera liée au socket dans bind_addr.
+ * Si un erreur survient bind_addr sera NULL et la foncton renverra -1.
+ */
+int create_and_bind_socket(struct addrinfo* addr_list, struct sockaddr* bind_addr, socklen_t* bind_addrlen) {
+    
+    int sock_fd;
+    int optval = 1;
+    struct addrinfo* rp;
 
-int factors_to_eat_num = 0;
-int primes_to_eat_num = 0;
+    bind_addr = NULL; 
 
-// Si le nombre n'est pas premiers stock les facteurs dans a et b sinon et
-// renvoie vrai, sinon renvoie faux et ne stock rien dans a et b.
-long long factors(long long num, long long* a, long long* b){
-    for (long long i = 2; i < sqrt(num); ++i) {
-        if (num % i == 0) {
-            *a = i;
-            *b = num / i;
-            return 1;
+    for (rp = addr_list; rp != NULL; rp = rp->ai_next) {
+        
+        sock_fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+
+        // Permet de réutilliser le port directement
+        setsockopt(sock_fd, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval));
+
+        if (sock_fd == -1)
+            continue;
+
+        if (bind(sock_fd, rp->ai_addr, rp->ai_addrlen) == 0) {
+            bind_addr = rp->ai_addr;
+            (*bind_addrlen) = rp->ai_addrlen;
+            break;                  /* Success */
+        }
+
+        close(sock_fd);
+    }
+
+    return bind_addr == NULL ? -1 : sock_fd;
+}
+
+pid_t fork_process(void){
+    
+    pid_t pid;
+
+    do{
+        pid = fork();
+    } 
+    while((pid == -1) && errno == EAGAIN);
+
+    return pid;
+}
+
+// renvoie les message au client
+void manage_client_connection(int client_socket, const char* host, const char* serv){
+
+    ssize_t nread = 0;
+    //struct sockaddr client_addr;
+    //socklen_t client_addrlen = sizeof(client_addr);
+
+    while (1) {
+
+        printf("Attente d'un message du client...\n");
+
+        char message[BUF_SIZE] = "";
+
+        //nread = recvfrom(client_socket, message, sizeof(message), 0, &client_addr, &client_addrlen); WARN_ERROR(nread);
+        nread = recv(client_socket, message, sizeof(message), 0); WARN_ERROR(nread);
+
+        printf("┌[RECEPTION IP : %s, PORT : %s]\n", host, serv);
+        printf("└─▶ %s", message);
+
+        printf("Renvoie du message en cours...\n");
+
+        //nread = sendto(client_socket, message, sizeof(message), 0, &client_addr, client_addrlen); WARN_ERROR(nread);
+        nread = send(client_socket, message, sizeof(message), 0); WARN_ERROR(nread);
+    }
+}
+
+void clean_exit(int num) {
+
+}
+
+int main(int argc, char const *argv[]){
+
+    PRINT_USAGE_IF(argc < 2, "Usage %s <PORT>\n", argv[0]);
+
+    const char* server_port = argv[1];
+
+    struct addrinfo hints;
+    struct addrinfo *result;
+
+    memset(&hints, 0, sizeof(struct addrinfo));
+
+    hints.ai_family = AF_UNSPEC;    /* Allow IPv4 or IPv6 */
+    hints.ai_socktype = SOCK_STREAM; /* TCP socket */
+    hints.ai_flags = AI_PASSIVE;    /* For wildcard IP address */
+
+    printf("Allocation de la liste d'adresses du serveur au PORT : %s...\n", server_port);
+
+    int error = getaddrinfo(NULL, server_port, &hints, &result); WARN_ERROR_GAI(error);
+
+    printf("Création du socket et liaison d'une adresse local...\n");
+
+    struct sockaddr server_addr;
+    socklen_t server_addrlen;
+
+    int server_socket = create_and_bind_socket(result, &server_addr, &server_addrlen); WARN_ERROR(server_socket);
+
+    char server_address[] = "localhost"; 
+
+   // error = getnameinfo(&server_addr, server_addrlen, server_address, sizeof(server_address), NULL, 0, NI_NUMERICHOST); WARN_ERROR_GAI(error);
+
+    printf("Liberation de la liste d'adresses du serveur au PORT : %s...\n", server_port);
+
+    freeaddrinfo(result);
+
+    printf("Assignation du mode connexion pour %d client(s) au socket...\n", MAX_CLIENT);
+
+    error = listen(server_socket, MAX_CLIENT); WARN_ERROR(error);
+
+    int client_socket;
+
+    // struct sockaddr_storage est generic, il peut contenir une adresse IPv4 ou IPv6
+    struct sockaddr_storage client_addr;
+    socklen_t client_addr_len = sizeof(client_addr);
+
+    printf("Serveur en attente de connexions...\n");
+    printf("IP : %s, PORT : %s\n", server_address, server_port);
+
+
+    while (1) {
+
+        client_socket = accept(server_socket, (struct sockaddr*) &client_addr, &client_addr_len); WARN_ERROR(client_socket);
+
+        char client_address_str[NI_MAXHOST] = "";
+        char client_port_str[NI_MAXSERV] = "";
+
+        error = getnameinfo((struct sockaddr*) &client_addr, client_addr_len, client_address_str, sizeof(client_address_str), client_port_str, sizeof(client_port_str), NI_NUMERICHOST|NI_NUMERICSERV); WARN_ERROR_GAI(error);
+        
+        printf("Creation d'un processus dedié au client d'IP : %s et de PORT : %s\n", client_address_str, client_port_str);
+
+        pid_t pid = fork_process(); WARN_ERROR(pid);
+
+        if (pid == 0) {
+            manage_client_connection(client_socket, client_address_str, client_port_str);
+            exit(EXIT_SUCCESS);
+        } else {
+            close(client_socket);
         }
     }
+
+    close(server_socket);
+
     return 0;
 }
-
-void* decomposeur(void* queue_id) {
-
-    int error;
-    int qid = *(int*)queue_id;
-    num_msg dcmp = {DECOMPOSEUR, 0};
-    num_msg dcmp_f1 = {DECOMPOSEUR, 0};
-    num_msg dcmp_f2 = {DECOMPOSEUR, 0};
-    num_msg dcmp_prime = {PARENT, 0};
-    
-    printf("Decomposeur %lu : started\n", pthread_self());
-
-    while (dcmp.num != -1) {
-
-        pthread_mutex_lock(&queue_mutex);
-        
-        while (factors_to_eat_num <= 0) {
-            printf("Decomposeur %lu : waiting for factors...\n", pthread_self());
-            pthread_cond_wait(&factor_cond, &queue_mutex);
-        }
-        
-        printf("Decomposeur %lu : msgrcv factor...\n", pthread_self());
-        error = msgrcv(qid, &dcmp, sizeof(dcmp.num), DECOMPOSEUR, 0); WARN_ERROR(error);
-        factors_to_eat_num--;
-
-        pthread_mutex_unlock(&queue_mutex);
-
-        if (dcmp.num != -1) {
-
-            printf("Decomposeur %lu : evaluating factors(%lld)...\n", pthread_self(), dcmp.num);
-
-            if (factors(dcmp.num ,&dcmp_f1.num, &dcmp_f2.num)) {
-                printf("Decomposeur %lu : factors(%lld) = (%lld, %lld)\n", pthread_self(), dcmp.num, dcmp_f1.num, dcmp_f2.num);
-                pthread_mutex_lock(&queue_mutex);
-                error = msgsnd(qid, &dcmp_f1, sizeof(dcmp_f1.num), 0); WARN_ERROR(error);
-                error = msgsnd(qid, &dcmp_f2, sizeof(dcmp_f2.num), 0); WARN_ERROR(error);
-                factors_to_eat_num += 2;
-                pthread_cond_broadcast(&factor_cond);
-                pthread_mutex_unlock(&queue_mutex);
-            } else {
-                dcmp_prime.num = dcmp.num;
-                printf("Decomposeur %lu : %lld is prime\n", pthread_self(), dcmp_prime.num);
-                pthread_mutex_lock(&queue_mutex);
-                error = msgsnd(qid, &dcmp_prime, sizeof(dcmp_prime.num), 0); WARN_ERROR(error);
-                primes_to_eat_num++;
-                pthread_cond_signal(&prime_cond);
-                pthread_mutex_unlock(&queue_mutex);
-            }
-        }
-    }
-
-    printf("Decomposeur %lu : stopped\n", pthread_self());
-
-    pthread_exit(NULL);
-}
-
-int main(int argc, char const *argv[]) {
-
-    PRINT_USAGE_IF(argc < 3, "Usage %s <NUM> <THREAD_NUM>", argv[0]);
-
-    int error;
-
-    num_msg dcmp_init = {DECOMPOSEUR, atoll(argv[1])};
-    int thread_num = atoi(argv[2]);
-
-    printf("Creation de la file de message...\n");
-
-    int queue_id = msgget(IPC_PRIVATE, 0666); WARN_ERROR(queue_id);
-
-    printf("ID FILE : %d\n", queue_id);
-
-    printf("Decomposition de %lld:\n", dcmp_init.num);
-
-    error = msgsnd(queue_id, &dcmp_init, sizeof(dcmp_init.num), 0); WARN_ERROR(error);
-    factors_to_eat_num++;
-
-    printf("Creation de %d décomposeurs...\n", thread_num);
-
-    pthread_t* thread_ids = (pthread_t*)malloc(thread_num * sizeof(pthread_t));
-
-    for (int i = 0; i < thread_num; ++i) {
-        error = pthread_create(&thread_ids[i], NULL, &decomposeur, &queue_id); WARN_ERROR_PTHREAD(error);
-    }
-
-    long long current_num = 1;
-    num_msg dcmp_current;
-
-    pthread_mutex_lock(&queue_mutex);
-
-    while (current_num != dcmp_init.num) {
-        
-        printf("Parent : waiting for primes...\n");
-        pthread_cond_wait(&prime_cond, &queue_mutex);
-        
-        while (primes_to_eat_num > 0) {
-            printf("Parent : msgrcv primes...\n");
-            error = msgrcv(queue_id, &dcmp_current, sizeof(dcmp_current.num), PARENT, 0); WARN_ERROR(error);
-            current_num *= dcmp_current.num;
-            printf("%lld *\n", dcmp_current.num);
-            primes_to_eat_num--;
-        }
-    }
-
-    /* Message pour terminer les decomposeurs */
-    num_msg dcmp_end = {DECOMPOSEUR, -1};
-    
-    printf("Envoie du signal de fin aux decomposeurs...\n");
-
-    for (int i = 0; i < thread_num; ++i) {
-        error = msgsnd(queue_id, &dcmp_end, sizeof(dcmp_end.num), 0); WARN_ERROR(error);
-        factors_to_eat_num++;
-    }
-
-    pthread_cond_broadcast(&factor_cond);
-    pthread_mutex_unlock(&queue_mutex);
-
-    printf("Attente des decomposeur...\n");
-    
-    for (int i = 0; i < thread_num; ++i) {
-        error = pthread_join(thread_ids[i], NULL); WARN_ERROR_PTHREAD(error);
-    }
-
-    printf("Destruction de la file de message...\n");
-    
-    error = msgctl(queue_id, IPC_RMID, NULL); WARN_ERROR(error);
-
-    return 0;
-}
-
 
 
 /*
@@ -184,17 +188,10 @@ const char* msg_data_file_path = "msg_data.txt";
 
 connection_request(server_sock);
 
-pid_t fork_process(void){
-    
-    pid_t pid;
 
-    do{
-        pid = fork();
-    } 
-    while((pid == -1) && errno == EAGAIN);
-
-    return pid;
-}
+void clean_exit(int num);
+void send_group_message();
+void send_direct_message();
 
 int main(int argc, char const *argv[]) {
     
