@@ -65,10 +65,9 @@ int create_and_connect_socket(struct addrinfo* addr_list, struct sockaddr* conne
 void init_client(int client_socket){
   size_t line_size = 0;
   int res, count = 0, number_lines = 0;
-  char* line = NULL;
 
-  FILE *fp = fopen(messages_path,"a");
-  while(1){
+  FILE *fp = fopen(messages_path,"w+");
+  while(number_lines <= 0){
 
     //nombre de lignes dans le fichier
     res = recv(client_socket,&number_lines,sizeof(number_lines),0);
@@ -76,44 +75,37 @@ void init_client(int client_socket){
     {
       continue;
     }
-    if (number_lines > 0)
-    {
-      break;
-    }
   }
-
-  while(1){
+  printf("%d\n", number_lines);
+  while(count < number_lines){
 
     //envoie des lignes dans le fichier
-    res = recv(client_socket,line_size,sizeof(line_size),0);
+    res = recv(client_socket,&line_size,sizeof(line_size),0);
     if (res == -1)
     {
       continue;
     }
 
-    res = recv(client_socket,line,line_size,0);
+    if(line_size > 0 ){
+
+    char message[line_size];
+    res = recv(client_socket,message,sizeof(message),0);
     if (res == -1)
     {
       continue;
     }
-    printf("%s\n", line);
 
-    if(line_size != 0 && line != NULL){
     //creation du fichier
-    res = fputs(line, fp);
+    printf("%s\n", message);
+    res = fputs(message, fp);
     if (res == EOF)
     {
       fprintf(stderr,"Erreur durant l'écriture du fichier \n");
       exit(1);
     }
-    line_size = 0;line = NULL;count++;
-    }
-    if (count == number_lines)
-    {
-      break;
+    line_size = 0;count++;
     }
   }
-  free(line);
   fclose(fp);
 
   return;
@@ -278,3 +270,53 @@ int main(int argc, char const *argv[]){
 
     return 0;
 }
+
+/*
+
+           if (len + 1 > BUF_SIZE) {
+               fprintf(stderr,
+                       "Ignoring long message in argument %d\n", j);
+               continue;
+           }
+
+           if (write(sfd, argv[j], len) != len) {
+               fprintf(stderr, "partial/failed write\n");
+               exit(EXIT_FAILURE);
+           }
+
+           nread = read(sfd, buf, BUF_SIZE);
+           if (nread == -1) {
+               perror("read");
+               exit(EXIT_FAILURE);
+           }
+
+           printf("Received %zd bytes: %s\n", nread, buf);
+           }
+
+ */
+/*
+           for (;;) {
+               peer_addr_len = sizeof(struct sockaddr_storage);
+               nread = recvfrom(sfd, buf, BUF_SIZE, 0,
+                       (struct sockaddr *) &peer_addr, &peer_addr_len);
+               if (nread == -1)
+                   continue;              
+
+               char host[NI_MAXHOST], service[NI_MAXSERV];
+
+               s = getnameinfo((struct sockaddr *) &peer_addr,
+                               peer_addr_len, host, NI_MAXHOST,
+                               service, NI_MAXSERV, NI_NUMERICSERV);
+               if (s == 0)
+                   printf("Received %zd bytes from %s:%s\n",
+                           nread, host, service);
+               else
+                   fprintf(stderr, "getnameinfo: %s\n", gai_strerror(s));
+
+               if (sendto(sfd, buf, nread, 0,
+                           (struct sockaddr *) &peer_addr,
+                           peer_addr_len) != nread)
+                   fprintf(stderr, "Error sending response\n");
+           }
+
+*/
