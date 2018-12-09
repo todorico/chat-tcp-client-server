@@ -15,11 +15,10 @@
 #include <fcntl.h>
 
 #include "warn.h"
+#include "chat.h"
 
 #define BUF_SIZE 1024
 #define MAX_CLIENT 10
-
-
  
 /* getaddrinfo() renvoie une structure de liste d'adresse.
  * On essaie chaque adresse jusqu'à ce qu'on puisse se connecter au socket.
@@ -27,191 +26,123 @@
  * On renvoie l'addresse qui sera connectée au socket dans connect_addr.
  * Si un erreur survient connect_addr sera NULL et la fonciton renverra -1.
  */
-int create_and_connect_socket(struct addrinfo* addr_list, struct sockaddr* connect_addr, socklen_t* connect_addrlen) {
+int create_connected_socket(const char* host, const char* service, struct addrinfo* hints) {
+	int error;
+    struct addrinfo *result;
 
-    int sock_fd;
-    int optval = 1;
+    //printf("Obtention d'informations sur l'HOTE : %s au PORT : %s...\n", host, service);
+
+    error = getaddrinfo(host, service, hints, &result); WARN_ERROR_GAI(error);
+
+    //printf("Création et nommage de la socket...\n");
+
+    int socket_fd;
     struct addrinfo* rp;
-
-    connect_addr = NULL; 
     
-    for (rp = addr_list; rp != NULL; rp = rp->ai_next) {
-      
-        sock_fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+    int optval = 1;
 
-        setsockopt(sock_fd, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval));
+    for (rp = result; rp != NULL; rp = rp->ai_next) {
+        
+        socket_fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
 
-        if (sock_fd == -1)
+        if (socket_fd == -1)
             continue;
 
-        if (connect(sock_fd, rp->ai_addr, rp->ai_addrlen) != -1) {
-            connect_addr = rp->ai_addr;
-            (*connect_addrlen) = rp->ai_addrlen;
-            break;      /* Success */
-        }
+        // Permet de réutilliser le port directement
+        setsockopt(socket_fd, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval));
 
-       close(sock_fd);
+        if (connect(socket_fd, rp->ai_addr, rp->ai_addrlen) != -1)
+            break;                  /* Success */
+
+        close(socket_fd);
     }
 
-    return connect_addr == NULL ? -1 : sock_fd;
+    freeaddrinfo(result);
+
+    return socket_fd;
 }
 
-void recv_and_save_messages(int sockfd, FILE* messages_stream) {
+void* handle_messages_sending(void* sockfd) {
+	int sock_fd = *(int*)sockfd;
 
-    long messages_count = 0;
+    CHAT_MESSAGE message;
+    CHAT_MESSAGE_init(&message);
 
-    printf("Reception du nombre de messages...\n");
-    
-    ssize_t nread = recv(sockfd, &messages_count, sizeof(messages_count), 0); WARN_ERROR(nread);
+    char date[STR_BUF_SIZE] = "0 av JC";
+    char sender[STR_BUF_SIZE] = "Jesus-christ";
 
-    printf("Reception du contenu des messages\n");
+    strcpy(message.date, date);
+    strcpy(message.sender, sender);
 
-    char* line = NULL;
-    size_t line_size = 0;
+    while (1) {
 
-    for (int i = 0; i < messages_count; ++i) {
-        nread = recv(sockfd, &line_size, sizeof(line_size), 0); WARN_ERROR(nread);
-        line = (char*) malloc(line_size);
-        nread = recv(sockfd, line, line_size, 0); WARN_ERROR(nread);
-        fprintf(messages_stream, "%s", line);
+        ssize_t nread = 0;
+        size_t msg_size = 0;
+        char* msg;
 
-        free(line);
+        printf("Entrez un message à envoyer :\n");
+        nread = getline(&msg, &msg_size, stdin); WARN_ERROR(nread);
+
+        strcpy(message.data, msg);
+
+        CHAT_MESSAGE_send(sock_fd, &message);
+
+        free(msg);
     }
 }
 
-void print_file(FILE* stream) {
+void* handle_messages_reception(void* sockfd) {
+	int sock_fd = *(int*)sockfd;
 
-    fseek(stream, 0, SEEK_SET);
+    CHAT_MESSAGE message;
+    CHAT_MESSAGE_init(&message);
 
-    char c = fgetc(stream); 
-
-    while (c != EOF) { 
-        printf ("%c", c); 
-        c = fgetc(stream); 
-    }  
+    while (1) {
+        CHAT_MESSAGE_recv(sock_fd, &message);
+        
+        printf("Message reçu :\n");
+        CHAT_MESSAGE_print(&message);
+    }
 }
-
-const char* messages_path = "client_messages.txt";
 
 int main(int argc, char const *argv[]){
 
-    PRINT_USAGE_IF(argc < 3, "Usage %s <HOTE> <PORT_>\n", argv[0]);
+    PRINT_USAGE_IF(argc < 3, "Usage %s <HOTE> <PORT>\n", argv[0]);
     
     const char* server_address = argv[1];
     const char* server_port = argv[2];
 
+    int error;
+
+    printf("Création et connection du socket à l'HOTE : %s, PORT : %s...\n", server_address, server_port);
     struct addrinfo hints;
-    struct addrinfo *result;
 
     memset(&hints, 0, sizeof(struct addrinfo));
 
-    hints.ai_family = AF_UNSPEC;    /* Allow IPv4 or IPv6 */
-    hints.ai_socktype = SOCK_STREAM; /* TCP socket */
+    hints.ai_family = AF_UNSPEC;	 // Autorise IPv4 ou IPv6
+    hints.ai_socktype = SOCK_STREAM; // Communication TCP
 
-    printf("Allocation de la liste d'adresses de l'HOTE : %s, PORT : %s...\n", server_address, server_port);
+    int client_socket = create_connected_socket(server_address, server_port, &hints); WARN_ERROR(client_socket);
 
-    int error = getaddrinfo(server_address, server_port, &hints, &result); WARN_ERROR_GAI(error);
+    printf("Synchronisation avec le serveur...\n");
+    CHAT_SHARED shared;
+    CHAT_SHARED_recv(client_socket, &shared);
 
-    printf("Création du socket et connexion sur une adresse de l'HOTE : %s, PORT : %s...\n", server_address, server_port);
-
-    struct sockaddr server_addr;
-    socklen_t server_addr_len;
-
-    int client_socket = create_and_connect_socket(result, &server_addr, &server_addr_len); WARN_ERROR(client_socket);
-
-    printf("Liberation de la liste d'adresses de l'HOTE : %s, PORT : %s...\n", server_address, server_port);
-
-    freeaddrinfo(result);
-
-    printf("Connexion en cours...\n");
- 
-    FILE* messages_stream = fopen(messages_path, "w+"); WARN_ERROR_IF(messages_stream == NULL);
+    CHAT_SHARED_print_messages(&shared);
     
-    printf("Reception des messages...\n");
+    printf("Creation des threads d'envoi et de reception de message...\n");
+    pthread_t thread_ids[2];
 
-    recv_and_save_messages(client_socket, messages_stream);
+    error = pthread_create(&thread_ids[0], NULL, handle_messages_sending, &client_socket); WARN_ERROR_PTHREAD(error);
+    error = pthread_create(&thread_ids[1], NULL, handle_messages_reception, &client_socket); WARN_ERROR_PTHREAD(error);
 
-    printf("Affichage des messages...\n");
+    error = pthread_join(thread_ids[0], NULL); WARN_ERROR_PTHREAD(error);
+    error = pthread_join(thread_ids[1], NULL); WARN_ERROR_PTHREAD(error);
 
-    print_file(messages_stream);
-
-    fclose(messages_stream);
-
-    while (1) {
-
-        printf("Message : ");
-
-        ssize_t nread = 0;
-        size_t message_size = 0;
-        char* message;
-
-        nread = getline(&message, &message_size, stdin); WARN_ERROR(nread);
-
-        printf("Envoie du message en cours...\n");
-
-        nread = send(client_socket, message, BUF_SIZE, 0); WARN_ERROR(nread);
-
-        printf("Attente d'une réponse du serveur...\n");
-
-        nread = recv(client_socket, message, BUF_SIZE, 0); WARN_ERROR(nread);
-        
-        printf("┌[RECEPTION HOTE : %s, PORT : %s]\n", server_address, server_port);
-        printf("└─▶ %s", message);
-
-        free(message);
-    }
-
+    printf("Nettoyage des structures allouées...\n");
     close(client_socket);
+
+    printf("Le client s'est terminé proprement...\n");
 
     return 0;
 }
-
-/*
-
-           if (len + 1 > BUF_SIZE) {
-               fprintf(stderr,
-                       "Ignoring long message in argument %d\n", j);
-               continue;
-           }
-
-           if (write(sfd, argv[j], len) != len) {
-               fprintf(stderr, "partial/failed write\n");
-               exit(EXIT_FAILURE);
-           }
-
-           nread = read(sfd, buf, BUF_SIZE);
-           if (nread == -1) {
-               perror("read");
-               exit(EXIT_FAILURE);
-           }
-
-           printf("Received %zd bytes: %s\n", nread, buf);
-           }
-
- */
-/*
-           for (;;) {
-               peer_addr_len = sizeof(struct sockaddr_storage);
-               nread = recvfrom(sfd, buf, BUF_SIZE, 0,
-                       (struct sockaddr *) &peer_addr, &peer_addr_len);
-               if (nread == -1)
-                   continue;              
-
-               char host[NI_MAXHOST], service[NI_MAXSERV];
-
-               s = getnameinfo((struct sockaddr *) &peer_addr,
-                               peer_addr_len, host, NI_MAXHOST,
-                               service, NI_MAXSERV, NI_NUMERICSERV);
-               if (s == 0)
-                   printf("Received %zd bytes from %s:%s\n",
-                           nread, host, service);
-               else
-                   fprintf(stderr, "getnameinfo: %s\n", gai_strerror(s));
-
-               if (sendto(sfd, buf, nread, 0,
-                           (struct sockaddr *) &peer_addr,
-                           peer_addr_len) != nread)
-                   fprintf(stderr, "Error sending response\n");
-           }
-
-*/

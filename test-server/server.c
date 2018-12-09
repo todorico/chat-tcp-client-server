@@ -6,6 +6,9 @@
 
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/ipc.h>
+#include <sys/sem.h>
+#include <sys/shm.h>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -15,49 +18,127 @@
 #include <fcntl.h>
 
 #include "warn.h"
+#include "chat.h"
 
-#define BUF_SIZE 1024
-#define MAX_CLIENT 10
+#define SHM_CUSTOM_KEY 1235
+#define SEM_CLIENT_CUSTOM_KEY 1236
+#define SEM_SHARED_CUSTOM_KEY 1237
 
- 
+void* handle_client_messages(void* handler_param) {
+    int error;
+
+    CHAT_MESSAGE message;
+    CHAT_MESSAGE_init(&message);
+
+    CHAT_HANDLER_PARAM* param = (CHAT_HANDLER_PARAM*)handler_param;
+
+    int shared_semid = semget(SEM_SHARED_CUSTOM_KEY, 1, 0666); WARN_ERROR(shared_semid);
+
+    int client_semid = semget(SEM_CLIENT_CUSTOM_KEY, NB_MAX_CLIENT, 0666); WARN_ERROR(client_semid);
+
+    struct sembuf opp;
+    opp.sem_num = 0;
+    opp.sem_op = -1;
+    opp.sem_flg = SEM_UNDO;
+
+    struct sembuf opv;
+    opv.sem_num = 0;
+    opv.sem_op = +1;
+    opv.sem_flg = SEM_UNDO;
+
+    while (1) {
+
+        CHAT_MESSAGE_recv(param->sockfd, &message);
+        
+        printf("Message reçu :\n");
+        CHAT_MESSAGE_print(&message);
+
+        error = semop(shared_semid, &opp, 1); WARN_ERROR(error); // verrouille l'acces au segment de mémoire
+
+        CHAT_SHARED_add_message(param->shared, &message); // Ajoute le message dans le segment de mémoire
+
+        error = semop(shared_semid, &opv, 1); WARN_ERROR(error); // deverrouille l'acces au segment de mémoire
+        
+        printf("Reveille de tous les semaphores client en attente...\n");
+        CHAT_SHARED_broadcast(param->shared, client_semid);
+    }
+}
+
+void* handle_shared_messages(void* handler_param) {
+    int error;
+
+    CHAT_MESSAGE* message = NULL;
+    CHAT_HANDLER_PARAM* param = (CHAT_HANDLER_PARAM*)handler_param;
+
+    int semid = semget(SEM_CLIENT_CUSTOM_KEY, NB_MAX_CLIENT, 0666); WARN_ERROR(semid);
+
+    int semnum = CHAT_SHARED_semaphore_num(param->shared, param->sockfd); WARN_ERROR(semnum);
+
+    struct sembuf opp;
+    opp.sem_num = semnum;
+    opp.sem_op = -1;
+    opp.sem_flg = SEM_UNDO;
+
+    while (1) {
+        
+        printf("Semaphore client N°%d en attente...\n", semnum);
+        error = semop(semid, &opp, 1); WARN_ERROR(error); // Attend jusqu'a ce que le semaphore semnum soit reveillé
+        
+        printf("Semaphore client N°%d reveillé !\n", semnum);
+        message = CHAT_SHARED_last_message(param->shared);
+        //error = semop(semid, &opv, NB_MAX_CLIENT); WARN_ERROR(error); // verrouille l'acces au segment de mémoire
+        
+        printf("Envoie du dernier message enregistré...\n");
+        CHAT_MESSAGE_print(message);
+
+        CHAT_MESSAGE_send(param->sockfd, message);
+    }
+}
+
 /* getaddrinfo() renvoie une structure de liste d'adresse.
  * On essaie chaque adresse jusqu'à ce qu'on puisse en liée une au socket.
  * Si socket (ou bind echoue, on (ferme le socket et) essaie l'adresse suivante.
  * On renvoie l'adresse qui sera liée au socket dans bind_addr.
  * Si un erreur survient bind_addr sera NULL et la foncton renverra -1.
  */
-int create_and_bind_socket(struct addrinfo* addr_list, struct sockaddr* bind_addr, socklen_t* bind_addrlen) {
-    
-    int sock_fd;
-    int optval = 1;
+int create_named_socket(const char* host, const char* service, struct addrinfo* hints) {
+
+    int error;
+    struct addrinfo *result;
+
+    //printf("Obtention d'informations sur l'HOTE : %s au PORT : %s...\n", host, service);
+
+    error = getaddrinfo(host, service, hints, &result); WARN_ERROR_GAI(error);
+
+    //printf("Création et nommage de la socket...\n");
+
+    int socket_fd;
     struct addrinfo* rp;
+    
+    int optval = 1;
 
-    bind_addr = NULL; 
-
-    for (rp = addr_list; rp != NULL; rp = rp->ai_next) {
+    for (rp = result; rp != NULL; rp = rp->ai_next) {
         
-        sock_fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        socket_fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
 
-        // Permet de réutilliser le port directement
-        setsockopt(sock_fd, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval));
-
-        if (sock_fd == -1)
+        if (socket_fd == -1)
             continue;
 
-        if (bind(sock_fd, rp->ai_addr, rp->ai_addrlen) == 0) {
-            bind_addr = rp->ai_addr;
-            (*bind_addrlen) = rp->ai_addrlen;
-            break;                  /* Success */
-        }
+        // Permet de réutilliser le port directement
+        setsockopt(socket_fd, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval));
 
-        close(sock_fd);
+        if (bind(socket_fd, rp->ai_addr, rp->ai_addrlen) == 0)
+            break;                  /* Success */
+
+        close(socket_fd);
     }
 
-    return bind_addr == NULL ? -1 : sock_fd;
+    freeaddrinfo(result);
+
+    return socket_fd;
 }
 
 pid_t fork_process(void){
-    
     pid_t pid;
 
     do{
@@ -68,144 +149,118 @@ pid_t fork_process(void){
     return pid;
 }
 
-int count_lines(FILE* stream) {
-
-    char c;  // To store a character read from file 
-    int count = 0;  // Line counter (result) 
-  
-    if (stream == NULL) 
-        return -1;
-  
-    for (c = getc(stream); c != EOF; c = getc(stream)) 
-        if (c == '\n') // Increment count if this character is newline 
-            count = count + 1; 
-
-    return count;
-}
-
-const char* messages_path = "server_messages.txt";
-
-
-void read_and_send_messages(int sockfd, FILE* messages_stream) {
-
-    int message_count = count_lines(messages_stream); WARN_ERROR(message_count);
-
-    // retour au debut du fichier
-    fseek(messages_stream, 0, SEEK_SET);
-    
-    printf("Envoie du nombre de %d messages...\n", message_count);
-    
-    ssize_t nread = send(sockfd, &message_count, sizeof(message_count), 0); WARN_ERROR(nread);
-
-    printf("Envoie du contenu des messages...\n");
-
-    char* line = NULL;
-    size_t line_size = 0;
-
-    while (getline(&line, &line_size, messages_stream) != -1) {
-        // Envoie taille message
-        nread = send(sockfd, &line_size, sizeof(line_size), 0); WARN_ERROR(nread);
-        // Envoie contenu message
-        nread = send(sockfd, line, line_size, 0); WARN_ERROR(nread);
-    }
-
-    free(line);
-}
-
 // renvoie les message au client
-void manage_client_connection(int client_socket, const char* host, const char* serv){
+void handle_client_connection(int client_socket, const char* host, const char* service){
+    int error;
 
-    ssize_t nread = 0;
+    printf("La session d'ID : %d s'attache au segment de mémoire...\n", client_socket);
+    int shmid = shmget(SHM_CUSTOM_KEY, 0, 0666); WARN_ERROR(shmid);
+
+    CHAT_HANDLER_PARAM handler_param;
+    handler_param.sockfd = client_socket;
+    handler_param.shared = shmat(shmid, NULL, 0); WARN_ERROR_IF(handler_param.shared == (void*)-1);
+
+    printf("La session d'ID : %d recupère le semaphore pour modifier le segment de mémoire...\n", client_socket);
+    int semid = semget(SEM_SHARED_CUSTOM_KEY, 1, 0666); WARN_ERROR(semid);
+
+    struct sembuf opp;
+    opp.sem_num = 0;
+    opp.sem_op = -1;
+    opp.sem_flg = SEM_UNDO;
+
+    struct sembuf opv;
+    opv.sem_num = 0;
+    opv.sem_op = 1;
+    opv.sem_flg = SEM_UNDO;
+
+    printf("La session d'ID : %d demande l'accès au segment mémoire...\n", client_socket);
+    error = semop(semid, &opp, 1); WARN_ERROR(error); // verrouille l'acces au segment de mémoire
+    printf("La session d'ID : %d ajoute sont indentifiant dans le segment de mémoire...\n", client_socket);
+    CHAT_SHARED_add_socket(handler_param.shared, client_socket);
+    error = semop(semid, &opv, 1); WARN_ERROR(error); // deverrouille l'acces au segment de mémoire
+
+    printf("La session d'ID : %d ce synchronise avec le client...\n", client_socket);
+    CHAT_SHARED_send(client_socket, handler_param.shared);
+
+    pthread_t thread_ids[2];
+
+    printf("La session d'ID : %d créér les threads de reception et de synchronisation avec le client...\n", client_socket);
+    error = pthread_create(&thread_ids[0], NULL, handle_client_messages, &handler_param); WARN_ERROR_PTHREAD(error);
+    error = pthread_create(&thread_ids[1], NULL, handle_shared_messages, &handler_param); WARN_ERROR_PTHREAD(error);
+
+    error = pthread_join(thread_ids[0], NULL); WARN_ERROR_PTHREAD(error);
+    error = pthread_join(thread_ids[1], NULL); WARN_ERROR_PTHREAD(error);
     
-    FILE* messages_stream = fopen(messages_path, "r"); WARN_ERROR_IF(messages_stream == NULL);
+    error = semop(SEM_SHARED_CUSTOM_KEY, &opp, 1); WARN_ERROR(error); // verrouille l'acces au segment de mémoire
+    CHAT_SHARED_remove_socket(handler_param.shared, client_socket);
+    error = semop(SEM_SHARED_CUSTOM_KEY, &opv, 1); WARN_ERROR(error); // deverrouille l'acces au segment de mémoire
 
-    read_and_send_messages(client_socket, messages_stream);
+    error = shmdt(handler_param.shared); WARN_ERROR(error);
 
-    fclose(messages_stream);
-
-    while (1) {
-
-        printf("Attente d'un message du client...\n");
-
-        char message[BUF_SIZE] = "";
-
-        //nread = recvfrom(client_socket, message, sizeof(message), 0, &client_addr, &client_addrlen); WARN_ERROR(nread);
-        nread = recv(client_socket, message, sizeof(message), 0); WARN_ERROR(nread);
-
-        printf("┌[RECEPTION IP : %s, PORT : %s]\n", host, serv);
-        printf("└─▶ %s", message);
-
-        printf("Renvoie du message en cours...\n");
-
-        //nread = sendto(client_socket, message, sizeof(message), 0, &client_addr, client_addrlen); WARN_ERROR(nread);
-        nread = send(client_socket, message, sizeof(message), 0); WARN_ERROR(nread);
-    }
+    printf("La session d'ID : %d s'est terminée proprement...\n", client_socket);
 }
 
 void clean_exit(int num) {
 
 }
 
-int main(int argc, char const *argv[]){
+int main(int argc, char const *argv[]) {   
+    int error;
 
     PRINT_USAGE_IF(argc < 2, "Usage %s <PORT>\n", argv[0]);
 
-    FILE* messages_stream = fopen(messages_path, "w+"); WARN_ERROR_IF(messages_stream == NULL);
-
-    fprintf(messages_stream, "bonjour !,\n");
-    fprintf(messages_stream, "je suis le contenu du fichier !\n");
-    fprintf(messages_stream, "interressant n'est-ce pas ?\n");
-    fprintf(messages_stream, "dans le future je contiendrai des messages de la forme:\n");
-    fprintf(messages_stream, "DATE_ENVOI:NOM_UTILISATEUR:MESSAGE\n");
-    
-    fclose(messages_stream);
-
     const char* server_port = argv[1];
 
-    struct addrinfo hints;
-    struct addrinfo *result;
+    union semun  {
+        int val;
+        struct semid_ds* buf;
+        ushort* array;
+    } sem_arg;
 
+    printf("Création et initialisation du segment de mémoire partagé...\n");
+    int shmid = shmget(SHM_CUSTOM_KEY, sizeof(CHAT_SHARED), IPC_CREAT | 0666); WARN_ERROR(shmid);
+
+    CHAT_SHARED* shared = shmat(shmid, NULL, 0); WARN_ERROR_IF(shared == (void*)-1);
+    CHAT_SHARED_init(shared);
+
+    printf("Création d'un sémaphore pour la modification du segment de mémoire...\n");
+    int shared_semid = semget(SEM_SHARED_CUSTOM_KEY, 1, 0666 | IPC_CREAT); WARN_ERROR(shared_semid);
+
+    sem_arg.val = 1; // Initialise le semaphore segment mémoire à 1 pour crééer un verrou
+
+    error = semctl(shared_semid, 0, SETVAL, sem_arg);
+
+    printf("Création des sémaphores pour la synchronisation des clients...\n");
+    int client_semid = semget(SEM_CLIENT_CUSTOM_KEY, NB_MAX_CLIENT, 0666 | IPC_CREAT); WARN_ERROR(client_semid);
+
+    sem_arg.val = 0; // Initialise les sémaphores client a 0 pour créér une barrière
+
+    for (int i = 0; i < NB_MAX_CLIENT; ++i) {
+        error = semctl(client_semid, i, SETVAL, sem_arg); WARN_ERROR(error);
+    }
+
+    printf("Création et nommage du socket serveur...\n");
+    struct addrinfo hints;
+    
     memset(&hints, 0, sizeof(struct addrinfo));
 
-    hints.ai_family = AF_UNSPEC;    /* Allow IPv4 or IPv6 */
-    hints.ai_socktype = SOCK_STREAM; /* TCP socket */
-    hints.ai_flags = AI_PASSIVE;    /* For wildcard IP address */
+    hints.ai_family = AF_UNSPEC;     // Autorise IPv4 ou IPv6
+    hints.ai_socktype = SOCK_STREAM; // Communication TCP
+    hints.ai_flags = AI_PASSIVE;     // For wildcard IP address
 
-    printf("Allocation de la liste d'adresses du serveur au PORT : %s...\n", server_port);
+    int server_socket = create_named_socket(NULL, server_port, &hints); WARN_ERROR(server_socket);
 
-    int error = getaddrinfo(NULL, server_port, &hints, &result); WARN_ERROR_GAI(error);
-
-    printf("Création du socket et liaison d'une adresse local...\n");
-
-    struct sockaddr server_addr;
-    socklen_t server_addrlen;
-
-    int server_socket = create_and_bind_socket(result, &server_addr, &server_addrlen); WARN_ERROR(server_socket);
-
-    char server_address[] = "localhost"; 
-
-   // error = getnameinfo(&server_addr, server_addrlen, server_address, sizeof(server_address), NULL, 0, NI_NUMERICHOST); WARN_ERROR_GAI(error);
-
-    printf("Liberation de la liste d'adresses du serveur au PORT : %s...\n", server_port);
-
-    freeaddrinfo(result);
-
-    printf("Assignation du mode connexion pour %d client(s) au socket...\n", MAX_CLIENT);
-
-    error = listen(server_socket, MAX_CLIENT); WARN_ERROR(error);
+    printf("Activation du mode connecté pouvant gerer jusqu'à %d client(s)...\n", NB_MAX_CLIENT);
+    error = listen(server_socket, NB_MAX_CLIENT); WARN_ERROR(error);
 
     int client_socket;
-
-    // struct sockaddr_storage est generic, il peut contenir une adresse IPv4 ou IPv6
-    struct sockaddr_storage client_addr;
+    struct sockaddr_storage client_addr; // Peut contenir à la fois des adresses IPv4 et IPv6
     socklen_t client_addr_len = sizeof(client_addr);
 
     printf("Serveur en attente de connexions...\n");
-    printf("IP : %s, PORT : %s\n", server_address, server_port);
-
+    printf("IP : %s, PORT : %s\n", "localhost", server_port);
 
     while (1) {
-
         client_socket = accept(server_socket, (struct sockaddr*) &client_addr, &client_addr_len); WARN_ERROR(client_socket);
 
         char client_address_str[NI_MAXHOST] = "";
@@ -214,148 +269,27 @@ int main(int argc, char const *argv[]){
         error = getnameinfo((struct sockaddr*) &client_addr, client_addr_len, client_address_str, sizeof(client_address_str), client_port_str, sizeof(client_port_str), NI_NUMERICHOST|NI_NUMERICSERV); WARN_ERROR_GAI(error);
         
         printf("Creation d'un processus dedié au client d'IP : %s et de PORT : %s\n", client_address_str, client_port_str);
-
         pid_t pid = fork_process(); WARN_ERROR(pid);
 
         if (pid == 0) {
-            manage_client_connection(client_socket, client_address_str, client_port_str);
-            exit(EXIT_SUCCESS);
-        } else {
+            close(server_socket);
+            handle_client_connection(client_socket, client_address_str, client_port_str);
             close(client_socket);
+            exit(EXIT_SUCCESS);
         }
     }
 
+    printf("Nettoyage des structures allouées...\n");
+    CHAT_SHARED_close_sockets(shared);
+    shmdt(shared);
+    
     close(server_socket);
+
+    shmctl(SHM_CUSTOM_KEY, 0, IPC_RMID);
+    semctl(SEM_CLIENT_CUSTOM_KEY, 0, IPC_RMID);
+    semctl(SEM_SHARED_CUSTOM_KEY, 0, IPC_RMID);
+
+    printf("le serveur s'est terminé proprement\n");
 
     return 0;
 }
-
-
-/*
-
-struct shared_segment {
-    int socket_fds_size = MAX_CLIENT;
-    int client_current_num = 0;
-    int socket_fds[MAX_CLIENT] = {-1};  
-};
-
-#define MEM_SEG_KEY 12345
-
-const char* msg_data_file_path = "msg_data.txt";
-
-connection_request(server_sock);
-
-
-void clean_exit(int num);
-void send_group_message();
-void send_direct_message();
-
-int main(int argc, char const *argv[]) {
-    
-    PRINT_USAGE_IF(argc < 2, "Usage %s <PORT>", argv[0]);
-    
-    create_segment(){
-    
-    }
-
-    create_socket()
-
-    wait_client() {
-        
-        while(true){
-            client_socket = accept(connection_sock))
-
-            fork
-            si fils 
-                manage_client(client_socket);
-            sinon
-                continue
-        }
-
-    }
-
-    manage_client(client_socket) {
-    
-        shared_data* = shmat();
-            
-        lock_data()
-        client_id = get_client_id(shared_data);
-        unlock_data();
-
-
-        msg_data_size = strlen(msg_data);
-        tcpsend()
-
-        lock();
-        remove_client_id(shared_data, client_id);
-        unlock
-    }
-
-}
-
-
-COMMUNICATIONS TCP/IP
-
-# SERVEUR CONCURRENT:
-- Gère l'accès des clients sur l'espace partagé.
-- Informe les clients des modifications.
-
-manage_client_update:
-- envoie données partagées au client
-- thread attente de modif, mise à jour espace partagée, diffusion nouvelle etat
-- thread attente modif autre client (semaphore), diffusion etat
-
-# CLIENT:
-- Echange avec le serveur pour visualisé/modifé le contenu de l'espace partagé.
-
-manage_server_update:
-- reception données partagées du serveur
-- thread modification de l'espace partagé
-- thread attente mise à jour
-
-date:username:msg
-
-
-autre:
-- structure partagé
-
-server.c:
-
-// renvoie l'id du segment
-int create_segment(...)
-
-int wait_client(...):
-    wait_connection en tcp
-    int manage_client(...)
-    int check_update(...)
-    int update_all(...)
-
-client.c:
-
-init_client():
-    demande de connexion tcp 1 <- taille username
-    demande de connexton tcp 2 <- username
-
-    attente reponse de connexion tcp 1 -> taille data
-    attente reponse de connexion tcp 2 -> data 
-    
-    creation fichier data;
-
-print_chat(filepath):
-    affiche le chat
-
-threads:
-
-void* rcv_chat_update(void*):
-    attente reponse de connexion tcp 1 -> taille data
-    attente reponse de connexion tcp 2 -> data 
-
-    réécriture du fichier data
-
-    print_chat(filepath)
-
-void* snd_chat_msg(void*)
-    getline()
-    envoie message tcp 1 <- taille message
-    envoie message tcp 2 <- message
-*/
