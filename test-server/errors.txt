@@ -1,0 +1,19 @@
+#test server 
+- se connecter sur le meme port avec des serveurs differents ne cree pas d'erreur 
+mais seul le premier serveur cree recoit les messages des client connectés.
+
+- creer un serveur puis un client se connecte sur le serveur, creer un serveur sur le meme port que le premier 
+et un client qui s'y connecte : une fois sur deux un des serveurs ne recoit pas les messages des clients.
+   
+- quand on depasse la limite de client connectés les client a qui ont a refusé la connexion 
+peuvents quand meme ecrire des messages sans destination
+
+-durant l'ecriture d'un message et que l'on passe a la ligne suivante effacé un element de la ligne precedente 
+devient impossible.
+
+-la creation d'un serveur et d'un client connecté puis la deconnexion du serveur provoque une erreur 
+ou tout les clients connectés affiche en boucle "message recu : " + le dernier message ecrit.
+
+-client connecté au serveur : si le client envoie un message au serveur et qu'il se deconnecte 
+puis lorqu'il se reconnecte au serveur il recoit plusieurs fois le dernier message envoyés, 
+les autres clients recoivent aussi ce meme message en boucle.
