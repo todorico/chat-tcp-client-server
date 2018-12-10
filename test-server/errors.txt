@@ -1,19 +1,18 @@
 #test server 
-- se connecter sur le meme port avec des serveurs differents ne cree pas d'erreur 
-mais seul le premier serveur cree recoit les messages des client connectés.
+- se connecter sur le même port avec des serveurs différents ne crée pas d'erreur mais seul le premier serveur créé reçoit les messages des clients connectés.
 
-- creer un serveur puis un client se connecte sur le serveur, creer un serveur sur le meme port que le premier 
+- créer un serveur et un client qui se connecte sur ce serveur, puis créer un nouveau serveur sur le meme port que le premier 
 et un client qui s'y connecte : une fois sur deux un des serveurs ne recoit pas les messages des clients.
    
-- quand on depasse la limite de client connectés les client a qui ont a refusé la connexion 
-peuvents quand meme ecrire des messages sans destination
+- quand on dépasse la limite de clients connectés les client a qui ont a refusé la connexion 
+ne peuvent pas écrire de message aux serveurs même lorsque de la place se libere chez les clients connectés.
+(en gros la mise en attente des clients ne fonctionne pas)
 
--durant l'ecriture d'un message et que l'on passe a la ligne suivante effacé un element de la ligne precedente 
+- durant l'écriture d'un message et que l'on passe à la ligne suivante effacer un element de la ligne précédente 
 devient impossible.
 
--la creation d'un serveur et d'un client connecté puis la deconnexion du serveur provoque une erreur 
-ou tout les clients connectés affiche en boucle "message recu : " + le dernier message ecrit.
+- la création d'un serveur et d'un client connecté puis la déconnexion du serveur provoque une erreur 
+ou tous les clients connectés affiche en boucle "message recu : " + le dernier message écrit.
 
--client connecté au serveur : si le client envoie un message au serveur et qu'il se deconnecte 
-puis lorqu'il se reconnecte au serveur il recoit plusieurs fois le dernier message envoyés, 
-les autres clients recoivent aussi ce meme message en boucle.
+- si un client se connecte sur un serveur et écrit une message puis se déconnecte le prochain client qui se connecte 
+recevra 10 fois ce mếme message comme historique de discussion.

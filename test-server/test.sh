@@ -9,47 +9,48 @@ fi
 
 SERV_ADDR=$1
 SERV_PORT=$2
+TERM=xterm
 
 # Serie de test N°1 :
 
-#xterm -e "./bin/server $SERV_PORT; $SHELL" &
-#sleep 1
-#xterm -e "./bin/server $SERV_PORT; $SHELL" &
-#sleep 1
-#xterm -e "./bin/server $SERV_PORT; $SHELL" &
-#sleep 1
-#xterm -e "echo message | ./bin/client $SERV_ADDR $SERV_PORT; $SHELL" &
+$TERM -e "./bin/server $SERV_PORT; $SHELL" &
+sleep 1
+$TERM -e "./bin/server $SERV_PORT; $SHELL" &
+sleep 1
+$TERM -e "./bin/server $SERV_PORT; $SHELL" &
+sleep 1
+$TERM -e "echo message | ./bin/client $SERV_ADDR $SERV_PORT; $SHELL" &
 
 # Serie de test N°2
 
-#xterm -e "./bin/server $SERV_PORT; $SHELL" &
-#sleep 1
-#xterm -e "./bin/client  $SERV_ADDR $SERV_PORT; $SHELL" &
-#sleep 1
-#xterm -e "./bin/server $SERV_PORT; $SHELL" &
-#sleep 1
-#xterm -e "echo message | ./bin/client $SERV_ADDR $SERV_PORT; $SHELL" &
+$TERM -e "./bin/server $SERV_PORT; $SHELL" &
+sleep 1
+$TERM -e "./bin/client  $SERV_ADDR $SERV_PORT; $SHELL" &
+sleep 1
+$TERM -e "./bin/server $SERV_PORT; $SHELL" &
+sleep 1
+$TERM -e "echo message | ./bin/client $SERV_ADDR $SERV_PORT; $SHELL" &
 
 # Serie de test N°3
 
-#xterm -e "./bin/server $SERV_PORT; $SHELL" &
-#sleep 1
-
-#for i in {1..11}; do xterm -e "./bin/client $SERV_ADDR $SERV_PORT; $SHELL" & done
-
-#for pid in $(ps -ef | grep ./bin/client | awk '{print $2}'); do
-#    kill $pid
-#    break
-#done
-		       
-#Serie de test N°4
-
-xterm -e "./bin/server $SERV_PORT; $SHELL" &
+$TERM -e "./bin/server $SERV_PORT; $SHELL" &
 sleep 1
 
-for i in {1..100}; do xterm -e "./bin/client $SERV_ADDR $SERV_PORT; $SHELL" & done
+for i in {1..11}; do $TERM -e "./bin/client $SERV_ADDR $SERV_PORT; $SHELL" & done
+for pid in $(ps -ef | grep ./bin/client | awk '{print $2}'); do
+	kill $pid
+	break
+done
+		       
+# Serie de test N°4
+
+$TERM -e "./bin/server $SERV_PORT; $SHELL" &
+sleep 1
+
+for i in {1..10}; do $TERM -e "./bin/client $SERV_ADDR $SERV_PORT; $SHELL" & done
 sleep 1
 for pid in $(ps -ef | grep ./bin/server | awk '{print $2}'); do
     kill $pid
     break
 done
+
