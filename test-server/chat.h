@@ -16,8 +16,8 @@
 
 #include "warn.h"
 
-#define NB_MAX_CLIENT 10
-#define NB_MAX_MESSAGE 10
+#define NB_MAX_CLIENT 2
+#define NB_MAX_MESSAGE 1000
 
 #define STR_BUF_SIZE 512
 #define MESSAGE_DATA_BUF_SIZE 1024
@@ -70,7 +70,7 @@ void CHAT_MESSAGE_recv(int sockfd, CHAT_MESSAGE* message) {
 }
 
 void CHAT_MESSAGE_print(CHAT_MESSAGE* message) {
-	printf("%s : %s : %s\n", message->date, message->sender, message->data);
+	printf("De %sLe %s%s\n", message->sender, message->date, message->data);
 }
 
 // CHAT_SHARED

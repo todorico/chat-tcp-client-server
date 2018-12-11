@@ -1,5 +1,0 @@
-bonjour !,
-je suis le contenu du fichier !
-interressant n'est-ce pas ?
-dans le future je contiendrai des messages de la forme:
-DATE_ENVOI:NOM_UTILISATEUR:MESSAGE
