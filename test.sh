@@ -1,9 +1,10 @@
 #!/bin/bash
 
-# Script de test pour les programmes client et server
+# Script de test pour les programmes client et server 
+# Attention à bien modifié la variable TERM si vous n'avez pas xterm
 
 if [ $# -ne 2 ]; then
-   echo "Usage : $0 <ADRESSE_SERVEUR> <NUMERO_PORT>"
+   echo "Usage : $0 <NOM_HOTE> <NUMERO_PORT>"
    exit 1
 fi
 
